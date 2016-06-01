@@ -6,12 +6,20 @@
 #include <fstream>
 #include <cstdint>
 #include <unordered_map>
+#include <algorithm>
 
 using namespace std;
+
+class Serializable {
+public:
+	virtual void Serialize( class Serializer & s ) = 0;
+	virtual void Deserialize( class Deserializer & d ) = 0;
+};
 
 class Serializer {
 private:
 	ofstream mFile;
+	vector<intptr_t> mSerializedObjects;
 public:
 	Serializer( const string & filename ) {
 		mFile.open( filename, ios::out | ios::binary );
@@ -20,6 +28,7 @@ public:
 	void WritePointer( void * ptr ) {
 		intptr_t p = (intptr_t)ptr;
 		mFile.write( (char*)&p, sizeof( p ));
+		mSerializedObjects.push_back( p );
 	}
 
 	void WriteReference( const void * who, const void * what, int offset ) {
@@ -50,11 +59,23 @@ public:
 		mFile.write( (char*)&f, sizeof( f ));
 	}
 
+	bool IsSerialized( const void * ptr ) {
+		return find( mSerializedObjects.begin(), mSerializedObjects.end(), (intptr_t)ptr ) != mSerializedObjects.end();
+	}
+
 	template<class T>
-	void WriteStdVector( const std::vector<T> & v ) {
+	void WriteStdVectorOfPointers( const std::vector<T> & v ) {
 		WriteInteger( v.size() );
 		for( size_t i = 0; i < v.size(); ++i ) {
 			WriteReference( &v[i], v[i], 0 );
+		}
+	}
+
+	template<class T>
+	void WriteStdVectorOfObjects( std::vector<T> & v ) {
+		WriteInteger( v.size() );
+		for( size_t i = 0; i < v.size(); ++i ) {
+			v[i].Serialize( *this );
 		}
 	}
 
@@ -128,11 +149,19 @@ public:
 	}
 
 	template<class T>
-	void ReadStdVector( std::vector<T> & v ) {
+	void ReadStdVectorOfPointers( std::vector<T> & v ) {
 		v.resize( ReadInteger());
 		for( size_t i = 0; i < v.size(); ++i ) {			
 			Reference ref = ReadReference();
 			mDynamicObjects[ ref.mWho ] = &v[i];
+		}
+	}
+
+	template<class T>
+	void ReadStdVectorOfObjects( std::vector<T> & v ) {
+		v.resize( ReadInteger());
+		for( size_t i = 0; i < v.size(); ++i ) {			
+			v[i].Deserialize( *this );
 		}
 	}
 
@@ -166,10 +195,4 @@ public:
 		}
 		return str;
 	}
-};
-
-class Serializable {
-public:
-	virtual void Serialize( Serializer & s ) = 0;
-	virtual void Deserialize( Deserializer & d ) = 0;
 };
