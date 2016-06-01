@@ -227,5 +227,7 @@ int main() {
 	// Deserialize
 	Load( filename );
 
+	system( "pause" );
+
 	return 0;
 }
