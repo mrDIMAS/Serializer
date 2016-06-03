@@ -2,7 +2,7 @@
 
 // Tests based on the scene graph - real and complex model
 
-class Property : public Serializable {
+class Property {
 public:
 	string mName;
 	int mValue;
@@ -16,17 +16,12 @@ public:
 	}
 
 	virtual void Serialize( class Serializer & s ) {
-		s.WriteString( mName );
-		s.WriteInteger( mValue );
-	}
-
-	virtual void Deserialize( class Deserializer & d ) {
-		mName = d.ReadString();
-		mValue = d.ReadInteger( );
+		s & mName;
+		s & mValue;
 	}
 };
 
-class SceneNode : public Serializable {
+class SceneNode {
 public:
 	string mName;
 	SceneNode * mParent;	
@@ -82,25 +77,11 @@ public:
 	virtual void Serialize( Serializer & s ) {
 		if( s.IsSerialized( this )) return;
 
-		s.WritePointer( this );
-		s.WriteString( mName );
-		s.WriteReference( this, mParent, MemberOffset<SceneNode>( &SceneNode::mParent ));
-		s.WriteStdVectorOfPointers( mChildren );
-		s.WriteStdVectorOfObjects( mProperties );
-	}
-
-	virtual void Deserialize( Deserializer & d ) {
-		d.ReadPointer( this );
-		mName = d.ReadString();
-		d.ReadReference();
-		d.ReadStdVectorOfPointers( mChildren );
-		d.ReadStdVectorOfObjects( mProperties );
-	}
-
-	static SceneNode * Create( Deserializer & d ) {
-		SceneNode * node = new SceneNode();
-		node->Deserialize( d );
-		return node;
+		s & this;
+		s & mName;
+		s & Reference( this, mParent, MemberOffset<SceneNode>( &SceneNode::mParent ));
+		s & mChildren;
+		s & mProperties;
 	}
 };
 
@@ -123,7 +104,7 @@ public:
 
 		SceneNode::Serialize( s );
 
-		s.WriteFloat( mRadius );
+		s & mRadius;
 	}
 
 	virtual void PrintInfo() const {
@@ -132,21 +113,10 @@ public:
 		cout << "Light data" << endl;
 		cout << "Radius: " << mRadius << endl;
 	}
-
-	virtual void Deserialize( Deserializer & d ) {
-		SceneNode::Deserialize( d );
-		mRadius = d.ReadFloat();
-	}
-
-	static Light * Create( Deserializer & d ) {
-		Light * node = new Light();
-		node->Deserialize( d );
-		return node;
-	}
 };
 
 void Save( const string & filename ) {
-	Serializer s( filename );
+	Serializer s( filename, true );
 
 	cout << "Creating test scene..." << endl;
 	// Create test scene
@@ -160,8 +130,7 @@ void Save( const string & filename ) {
 	node2->AddProperty( Property( "Fancy property", 666 ));
 	
 	node1->AttachTo( node2 );
-
-	
+		
 	for( auto node : SceneNode::msNodes ) {
 		node->PrintInfo();
 	}
@@ -171,14 +140,15 @@ void Save( const string & filename ) {
 	cout << "Saving scene to: " << filename << endl;
 
 	// Serialize all nodes
-	s.WriteInteger( SceneNode::msNodes.size() );
-	for( int i = 0; i < SceneNode::msNodes.size(); ++i ) {
+	auto count = SceneNode::msNodes.size();
+	s & count;
+	for( int i = 0; i < count; ++i ) {
 		auto node = SceneNode::msNodes[i];
 		// write type
 		if( dynamic_cast<Light*>( node )) {
-			s.WriteString( "Light" );
+			s & "Light";
 		} else {
-			s.WriteString( "Node" );
+			s & "Node";
 		}
 		node->Serialize( s );
 	}
@@ -192,24 +162,27 @@ void Save( const string & filename ) {
 }
 
 void Load( const string & filename ) {
-	Deserializer d( filename );
+	Serializer s( filename, false );
 
 	cout << endl << "Loading scene from: " << filename << endl;
 
-	int nodeCount = d.ReadInteger();
+	int nodeCount;
+	s & nodeCount;
 	for( int i = 0; i < nodeCount; ++i ) {
 		SceneNode * node;
 		// Read type 
-		string type = d.ReadString();
+		string type;
+		s & type;
 		// Create object
 		if( type == "Light" ) {
-			node = Light::Create( d );
+			node = new Light;
 		} else {
-			node = SceneNode::Create( d );
+			node = new SceneNode;
 		}		
+		node->Serialize( s );
 	}
 
-	d.Finish();
+	s.Finish();
 
 	for( auto node : SceneNode::msNodes ) {
 		node->PrintInfo();

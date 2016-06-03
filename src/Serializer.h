@@ -10,79 +10,13 @@
 
 using namespace std;
 
-class Serializable {
-public:
-	virtual void Serialize( class Serializer & s ) = 0;
-	virtual void Deserialize( class Deserializer & d ) = 0;
-};
+template <typename MostDerived, typename C, typename M>
+ptrdiff_t MemberOffset (M C::* member)
+{
+	MostDerived d;
+	return reinterpret_cast<char*> (&(d.*member)) - reinterpret_cast<char*> (&d);
+}
 
-class Serializer {
-private:
-	ofstream mFile;
-	vector<intptr_t> mSerializedObjects;
-public:
-	Serializer( const string & filename ) {
-		mFile.open( filename, ios::out | ios::binary );
-	}
-
-	void WritePointer( void * ptr ) {
-		intptr_t p = (intptr_t)ptr;
-		mFile.write( (char*)&p, sizeof( p ));
-		mSerializedObjects.push_back( p );
-	}
-
-	void WriteReference( const void * who, const void * what, int offset ) {
-		intptr_t p;
-
-		p = (intptr_t)who;
-		mFile.write( (char*)&p, sizeof( p ));
-
-		p = (intptr_t)what;
-		mFile.write( (char*)&p, sizeof( p ));
-
-		mFile.write( (char*)&offset, sizeof( offset ));
-	}
-
-	void WriteString( const string & str ) {
-		for( auto symbol : str ) {
-			mFile.write( &symbol, sizeof( symbol ));
-		}
-		char end = '\0';
-		mFile.write( &end, sizeof( end ));
-	}
-
-	void WriteInteger( int i ) {
-		mFile.write( (char*)&i, sizeof( i ));
-	}
-
-	void WriteFloat( float f ) {
-		mFile.write( (char*)&f, sizeof( f ));
-	}
-
-	bool IsSerialized( const void * ptr ) {
-		return find( mSerializedObjects.begin(), mSerializedObjects.end(), (intptr_t)ptr ) != mSerializedObjects.end();
-	}
-
-	template<class T>
-	void WriteStdVectorOfPointers( const std::vector<T> & v ) {
-		WriteInteger( v.size() );
-		for( size_t i = 0; i < v.size(); ++i ) {
-			WriteReference( &v[i], v[i], 0 );
-		}
-	}
-
-	template<class T>
-	void WriteStdVectorOfObjects( std::vector<T> & v ) {
-		WriteInteger( v.size() );
-		for( size_t i = 0; i < v.size(); ++i ) {
-			v[i].Serialize( *this );
-		}
-	}
-
-	void Finish() {
-		mFile.close();
-	}
-};
 
 struct Reference {
 	intptr_t mWho;
@@ -96,103 +30,226 @@ struct Reference {
 	Reference( intptr_t who, intptr_t what, int offset ) : mWho( who ), mWhat( what ), mOffset( offset ) {
 
 	}
+
+	Reference( const void * who, const void * what, int offset ) : mWho( (intptr_t)who ), mWhat( (intptr_t)what ), mOffset( offset ) {
+
+	}
 };
 
-template <typename MostDerived, typename C, typename M>
-ptrdiff_t MemberOffset (M C::* member)
-{
-	MostDerived d;
-	return reinterpret_cast<char*> (&(d.*member)) - reinterpret_cast<char*> (&d);
-}
-
-class Deserializer {
+class Serializer {
 private:
-	ifstream mFile;
+	bool mWrite;
+	fstream mFile;
+
+	// Writer
+	vector<intptr_t> mSerializedObjects;
+
+	// Reader
 	unordered_map<intptr_t, void*> mDynamicObjects;
 	vector<Reference> mReferences;
 public:
-	Deserializer( const string & filename ) {
-		mFile.open( filename, ios::in | ios::binary );
+	Serializer( const string & filename, bool write ) : mWrite( write ) {
+		mFile.open( filename, (mWrite ? ios::out : ios::in) | ios::binary );
 	}
 
-	void ReadPointer( void * realObject ) {
-		intptr_t p;
-		mFile.read( (char*)&p, sizeof( p ));
-		mDynamicObjects[p] = realObject;
-	}
-
-	Reference ReadReference() {
-		intptr_t who;
-		mFile.read( (char*)&who, sizeof( who ));
-
-		intptr_t what;
-		mFile.read( (char*)&what, sizeof( what ));
-
-		int offset;
-		mFile.read( (char*)&offset, sizeof( offset ));
-
-		mReferences.push_back( Reference( who, what, offset ));
-
-		return Reference( who, what, offset );
-	}
-
-	int ReadInteger( ) {
-		int i;
-		mFile.read( (char*)&i, sizeof( i ));
-		return i;
-	}
-
-	float ReadFloat( ) {
-		float f;
-		mFile.read( (char*)&f, sizeof( f ));
-		return f;
-	}
-
-	template<class T>
-	void ReadStdVectorOfPointers( std::vector<T> & v ) {
-		v.resize( ReadInteger());
-		for( size_t i = 0; i < v.size(); ++i ) {			
-			Reference ref = ReadReference();
-			mDynamicObjects[ ref.mWho ] = &v[i];
+	bool IsSerialized( const void * ptr ) {
+		if( mWrite ) {
+			return find( mSerializedObjects.begin(), mSerializedObjects.end(), (intptr_t)ptr ) != mSerializedObjects.end();
+		} else {
+			return false;
 		}
 	}
 
-	template<class T>
-	void ReadStdVectorOfObjects( std::vector<T> & v ) {
-		v.resize( ReadInteger());
-		for( size_t i = 0; i < v.size(); ++i ) {			
-			v[i].Deserialize( *this );
-		}
-	}
-
-	void Finish() {		
+	void Finish() {
 		mFile.close();
 
-		ResolveReferences();
+		if( !mWrite ) {
+			// Resolve references
+			for( auto & ref : mReferences ) {
+				char * who = (char*)mDynamicObjects[ref.mWho];
+				char * what = (char*)mDynamicObjects[ref.mWhat];
+
+				if( what && who ) {
+					memcpy( who + ref.mOffset, &what, sizeof(intptr_t));
+				}
+			}
+		}
+	}
+	
+	// Handle integer
+	void operator & ( int & i ) {		
+		if( mWrite ) {
+			mFile.write( (char*)&i, sizeof( i ));
+		} else {
+			mFile.read( (char*)&i, sizeof( i ));
+		}
+	}
+		
+	// Handle unsigned integer
+	void operator & ( unsigned int & ui ) {
+		if( mWrite ) {
+			mFile.write( (char*)&ui, sizeof( ui ));
+		} else {
+			mFile.read( (char*)&ui, sizeof( ui ));
+		}
+	}
+		
+	// Handle unsigned short
+	void operator & ( unsigned short & us ) {
+		if( mWrite ) {
+			mFile.write( (char*)&us, sizeof( us ));
+		} else {
+			mFile.read( (char*)&us, sizeof( us ));
+		}
+	}
+	
+	// Handle short
+	void operator & ( short & s ) {
+		if( mWrite ) {
+			mFile.write( (char*)&s, sizeof( s ));
+		} else {
+			mFile.read( (char*)&s, sizeof( s ));
+		}
+	}
+		
+	// Handle char
+	void operator & ( char & c ) {
+		if( mWrite ) {
+			mFile.write( (char*)&c, sizeof( c ));
+		} else {
+			mFile.read( (char*)&c, sizeof( c ));
+		}
+	}
+	
+	// Handle unsigned char
+	void operator & ( unsigned char & uc ) {
+		if( mWrite ) {
+			mFile.write( (char*)&uc, sizeof( uc ));
+		} else {
+			mFile.read( (char*)&uc, sizeof( uc ));
+		}
 	}
 
-	void ResolveReferences() {
-		for( auto & ref : mReferences ) {
-			char * who = (char*)mDynamicObjects[ref.mWho];
-			char * what = (char*)mDynamicObjects[ref.mWhat];
+	// Handle float
+	void operator & ( float & f ) {
+		if( mWrite ) {
+			mFile.write( (char*)&f, sizeof( f ));
+		} else {
+			mFile.read( (char*)&f, sizeof( f ));
+		}
+	}
 
-			if( what && who ) {
-				memcpy( who + ref.mOffset, &what, sizeof(intptr_t));
+	// Handle string
+	void operator & ( string & str ) {
+		if( mWrite ) {
+			for( auto symbol : str ) {
+				mFile.write( &symbol, sizeof( symbol ));
+			}
+			char end = '\0';
+			mFile.write( &end, sizeof( end ));
+		} else {
+			while( !mFile.eof()) {
+				char symbol;
+				mFile.read( &symbol, sizeof( symbol ));
+				if( symbol == '\0' ) {
+					break;
+				} else {
+					str.push_back( symbol );
+				}
 			}
 		}
 	}
 
-	string ReadString() {
-		string str;		
-		while( !mFile.eof()) {
-			char symbol;
-			mFile.read( &symbol, sizeof( symbol ));
-			if( symbol == '\0' ) {
-				break;
-			} else {
-				str.push_back( symbol );
+	// Handle C string
+	void operator & ( const char * str ) {
+		if( mWrite ) {
+			while( *str != '\0' ) {
+				mFile.write( str, sizeof( *str ));
+				++str;
+			}
+			char end = '\0';
+			mFile.write( &end, sizeof( end ));
+		} else {
+
+		}
+	}
+
+	// Handle vector of objects
+	template<class T> 
+	void operator & ( std::vector<T> & v ) {
+		if( mWrite ) {
+			auto count = v.size();
+			(*this) & count;
+			for( size_t i = 0; i < v.size(); ++i ) {
+				v[i].Serialize( *this );			
+			}
+		} else {
+			int count;
+			(*this) & count;
+			v.resize( count );
+			for( size_t i = 0; i < v.size(); ++i ) {			
+				v[i].Serialize( *this );
 			}
 		}
-		return str;
+	}
+
+	// Handle vector of pointers
+	template<class T> 
+	void operator & ( std::vector<T*> & v ) {
+		if( mWrite ) {
+			auto count = v.size();
+			(*this) & count;
+			for( size_t i = 0; i < v.size(); ++i ) {
+				(*this) & Reference( &v[i], v[i], 0 );
+			}
+		} else {
+			int count;
+			(*this) & count;
+			v.resize( count );
+			for( size_t i = 0; i < v.size(); ++i ) {			
+				Reference ref;
+				(*this) & ref;
+				mDynamicObjects[ ref.mWho ] = &v[i];
+			}
+		}
+	}
+	
+	// Handle reference
+	void operator & ( Reference & ref ) {
+		if( mWrite ) {
+			mFile.write( (char*)&ref.mWho, sizeof( ref.mWho ));
+			mFile.write( (char*)&ref.mWhat, sizeof( ref.mWhat ));
+			mFile.write( (char*)&ref.mOffset, sizeof( ref.mOffset ));	
+		} else {
+			intptr_t who;
+			mFile.read( (char*)&who, sizeof( who ));
+
+			intptr_t what;
+			mFile.read( (char*)&what, sizeof( what ));
+
+			int offset;
+			mFile.read( (char*)&offset, sizeof( offset ));
+
+			ref.mWho = who;
+			ref.mWhat = what;
+			ref.mOffset = offset;
+
+			mReferences.push_back( ref );
+		}
+	}
+
+	// Handle pointer
+	template<class T> 
+	void operator & ( T * ptr ) {
+		if( mWrite ) {
+			intptr_t p = (intptr_t)ptr;
+			mFile.write( (char*)&p, sizeof( p ));
+			mSerializedObjects.push_back( p );
+		} else {
+			intptr_t p;
+			mFile.read( (char*)&p, sizeof( p ));
+			mDynamicObjects[p] = const_cast<T*>( ptr );
+		}
 	}
 };
+
